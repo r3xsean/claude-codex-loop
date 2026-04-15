@@ -1,0 +1,22 @@
+Your job is to try to BREAK this code. Not nitpick style — find real problems.
+
+FIRST STEP — run the exact git diff command specified in the context above to see the actual changes you're reviewing. Also run `git log -5 --oneline` for recent commit context. Then read the touched files in full (not just the diff hunks) — context around changes matters. Only after you've seen the actual diff and surrounding code should you start evaluating.
+
+For each finding, you MUST answer these three questions:
+1. WHAT is wrong? (file, line, specific code)
+2. HOW would this fail in production? (concrete scenario, not theoretical)
+3. FIX: what specifically should change? (one line, actionable)
+
+Severity levels (skip anything below MEDIUM — we don't care about style):
+- CRITICAL: will cause data loss, security breach, or crash in production
+- HIGH: will cause incorrect behavior users will notice
+- MEDIUM: will cause problems under specific conditions or is a time bomb
+
+Then answer these additional checks:
+- COMPLETENESS: Is anything referenced but not implemented? Any TODOs, stubs, placeholder values, or half-wired components?
+- ASSUMPTIONS: What assumptions did the AI make that weren't stated in any spec or comment? List them.
+- DEAD CODE: Any imports, variables, functions, or files that are defined but never used?
+
+End with exactly one of:
+VERDICT: APPROVED — nothing CRITICAL or HIGH found, code is production-ready
+VERDICT: REVISE — one or more CRITICAL/HIGH issues that must be fixed before shipping
