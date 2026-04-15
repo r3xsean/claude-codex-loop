@@ -21,26 +21,101 @@ The principles reference the skills. The skills reference the scripts. The scrip
 - [OpenAI Codex CLI](https://github.com/openai/codex) authenticated with a plan that includes `gpt-5.4` (the ChatGPT Plus plan is sufficient for typical usage)
 - Windows 10/11 with PowerShell 7+ (`pwsh`)
 
-## The idea in one page
+## The idea
 
-Karpathy observed that LLMs:
+### Two Karpathy observations in tension
 
-> *"make wrong assumptions on your behalf and just run along with them without checking. They don't manage their confusion, don't seek clarifications, don't surface inconsistencies, don't present tradeoffs, don't push back when they should. They really like to overcomplicate code and APIs, bloat abstractions, don't clean up dead code..."*
+Karpathy's first observation is about LLM failure modes:
 
-And separately:
+> *"The models make wrong assumptions on your behalf and just run along with them without checking. They don't manage their confusion, don't seek clarifications, don't surface inconsistencies, don't present tradeoffs, don't push back when they should. They really like to overcomplicate code and APIs, bloat abstractions, don't clean up dead code. They still sometimes change/remove comments and code they don't sufficiently understand as side effects, even if orthogonal to the task."*
+
+His second is about what LLMs are exceptionally good at:
 
 > *"LLMs are exceptionally good at looping until they meet specific goals... Don't tell it what to do, give it success criteria and watch it go."*
 
-This repo stitches both observations into one workflow:
+These pull in opposite directions. The first says: **slow down, surface uncertainty, don't assume.** The second says: **give it criteria, let it run, stop interrupting.** The workflow that gets both right has to distinguish *when* to pause versus *when* to loop — and provide a mechanism to keep the loop alive when friction hits, without handing control back to you every time.
 
-1. **Four Karpathy principles** (Think Before Coding / Simplicity First / Surgical Changes / Goal-Driven Execution) address the first set of failure modes.
-2. **A "Production-Ready Loop"** with trigger phrases (*"ship it"*, *"don't stop"*, *"loop until done"*) turns Claude loose to self-verify until success criteria are met.
-3. **OpenAI Codex as a second model**, woven in at two moments:
-   - **`/codex` = navigator** — fires BEFORE Claude presents a non-trivial design, so you see a plan that already survived a second opinion
-   - **`/codex-review` = inspector** — fires BEFORE Claude declares victory, as an adversarial completion review
-4. **An escalation ladder** (self → /codex → user) so the autonomous loop stays alive longer: when Claude gets stuck mid-loop, it consults Codex before interrupting you.
+This repo stitches both into one workflow using three ingredients:
 
-One-liner for Codex role separation: **Use `/codex` before you commit; use `/codex-review` before you declare victory.**
+### 1. Four Karpathy principles (what to do)
+
+Drawn from [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills). Each addresses a specific failure mode Karpathy named:
+
+- **Think Before Coding** — state assumptions explicitly, present multiple interpretations instead of picking silently, push back when a simpler approach exists. Fights the "wrong assumptions run silently" failure.
+- **Simplicity First** — minimum code that solves the problem. No abstractions for single-use code, no configurability that wasn't asked for, no error handling for impossible scenarios. Fights "bloat and overcomplication."
+- **Surgical Changes** — touch only what the request requires. Don't "improve" adjacent code, don't refactor things that aren't broken, match existing style. Fights "drive-by edits and orthogonal side effects."
+- **Goal-Driven Execution** — transform imperative tasks into verifiable goals ("add validation" → "write tests for invalid inputs, then make them pass"). Strong success criteria let the model loop; weak ones ("make it work") require constant clarification.
+
+### 2. The Production-Ready Loop (when to go fully autonomous)
+
+Karpathy's looping insight only works if the model is actually allowed to loop. By default, Claude Code tends to check in between steps — which is often *correct* behavior, but becomes friction once you've scoped the work and just want it done.
+
+This repo adds a **trigger-phrase mode.** When you say *"production ready"*, *"ship it"*, *"loop until done"*, *"don't stop"*, or equivalent, Claude engages autonomous mode and runs:
+
+```
+implement → tests/typecheck/lint → fix failures → /codex-review → fix findings → re-verify → repeat
+```
+
+…until the success criteria are met. The loop is **sticky** — once engaged, it continues until a stop condition fires.
+
+There's also a **softer default mode** (no trigger phrase needed): push through obvious next steps without unnecessary check-ins. If the next step is determined by what just happened, take it. This addresses the common complaint of "Claude stops between every step to ask me" without committing you to full autonomy.
+
+### 3. OpenAI Codex as the woven-in second model
+
+Claude is strong, but it makes **correlated errors** — bugs and misreadings it systematically misses because of how it was trained. A second model trained differently catches what the first misses. This repo wires OpenAI Codex (GPT-5.4) into Claude's workflow at two distinct moments, with two distinct roles:
+
+#### `/codex` = navigator — *"Are we taking the right route?"*
+
+Fires **before Claude commits to a direction.** Specifically:
+
+- **Design-presentation moments (primary trigger).** Before Claude presents a non-trivial plan, architecture, data model, or approach comparison, `/codex` runs first. You see a design that has already survived a second opinion — not a raw first draft you then have to ask Claude to validate. Claude folds Codex's feedback into the presentation under an **"integrate judgment, preserve dissent"** rule: agreements are noted, disagreements are surfaced plainly (*"Codex pushed back on X; I adjusted"* / *"Codex still disagrees on Z; my recommendation is A because..."*), and if the plan changed materially, Claude shows the delta (*"My initial instinct was X; after consulting Codex I'm proposing Y because..."*).
+- **Commitment-time fallback.** If you commit without an explicit design having been presented ("just go do X"), Codex still runs before code gets written.
+- **Mid-loop unblocker.** The most important use. When the Production-Ready Loop hits friction — failed tactics, inconsistent tests, ambiguous review findings, stuck approaches — Codex is consulted *first*, before the loop escalates to interrupting you.
+
+Firing is based on **decision density**, not document shape: multiple coordinated steps or non-obvious tradeoffs fire it; single mechanical steps don't.
+
+#### `/codex-review` = inspector — *"Does the finished work hold up?"*
+
+Fires **before Claude declares victory.** Adversarial completion review with one job: try to break the code. Not a linter, not a style pass. Hunts specifically for the failure modes AI coding agents produce:
+
+- False completion claims ("it's wired up" when it isn't)
+- Silent assumptions not surfaced in any spec or comment
+- Race conditions and async edge cases
+- Incomplete wiring, dead code, leftover stubs
+- Production failure modes masked by "works locally"
+
+Returns a verdict (APPROVED / REVISE) plus findings at CRITICAL / HIGH / MEDIUM severity. Auto-invokes before Claude reports a finished non-trivial change. One review per meaningful unit of work, not per file-edit.
+
+#### The role separation in one line
+
+**Use `/codex` before you commit; use `/codex-review` before you declare victory.** One challenges the plan; the other challenges the finished work. They operate on different artifacts at different moments — no collision.
+
+### 4. The escalation ladder (self → /codex → user)
+
+This is what keeps the autonomous loop alive longer than a naive "loop until you hit an error" would.
+
+When Claude hits friction mid-loop, the escalation order is:
+
+1. **Self** — try a different tactic (bounded: no more than 2 retries of the same approach)
+2. **`/codex`** — consult Codex for a fresh diagnostic, try its suggested alternative
+3. **User** — only as a last resort, with full diagnostic attached
+
+Concretely: same tactic fails twice → Codex gets called for a fresh angle. Tests fail inconsistently → Codex classifies real-bug-vs-flaky. A `/codex-review` finding is ambiguous about whether it's blocking → a fresh Codex session adjudicates. Only after Codex has been consulted and the loop is still stuck does Claude actually interrupt you.
+
+**Hard stops that skip the ladder and go straight to the user:**
+- Destructive or irreversible actions (migrations, force-pushes, etc.) — non-negotiable safety gate
+- Genuine requirement ambiguity — what you *want* isn't a technical question; Codex can't answer it
+- The loop is chasing polish, not substance — `/codex-review` nits don't keep the loop alive; only correctness, regressions, unmet requirements, or missing verification do
+
+### Why the combination matters
+
+Any of the three ingredients alone is useful but incomplete:
+
+- **Principles without the loop**: careful but slow, and you still have to micromanage.
+- **The loop without Codex**: fast but brittle — the moment it hits real friction, it either thrashes or interrupts you.
+- **Codex without the loop**: a better first draft, but you're still the bottleneck on every subsequent step.
+
+Put together: the principles make Claude's default output better, the loop runs it through a verification cycle autonomously, and Codex both front-loads the plan with a second opinion *and* serves as the first escalation layer when the loop hits friction. The result is a workflow where Claude loops longer on real work before tapping you on the shoulder — and when it does tap, the problem is genuinely a human decision, not something a second model could have resolved.
 
 ## Install (manual — canonical)
 
